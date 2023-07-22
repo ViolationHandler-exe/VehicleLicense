@@ -325,7 +325,6 @@ namespace Oxide.Plugins
             }
             vehicle.OnDismount();
         }
-        
 
         #region Mount
 
@@ -3636,8 +3635,8 @@ namespace Oxide.Plugins
                         }
                         if (IsWaterVehicle && (int)player.transform.position.y >= -1)
                         {
-                            if (vehicle.VehicleType == "Tugboat" && Vector3.Distance(spawnPos, player.transform.position) <= configData.normalVehicles.tugboat.Distance 
-                               && spawnPos.y - player.transform.position.y <= configData.normalVehicles.tugboat.Distance)
+                            if (vehicle.VehicleType == "Tugboat" && Vector3.Distance(spawnPos, player.transform.position) < configData.normalVehicles.tugboat.Distance 
+                               && spawnPos.y - player.transform.position.y < configData.normalVehicles.tugboat.Distance)
                             {
                                 spawnPos += player.eyes.MovementForward() * configData.normalVehicles.tugboat.Distance;
                             }
@@ -3647,7 +3646,7 @@ namespace Oxide.Plugins
                         {
                             // Math.Abs(Math.Abs(spawnPos.y) - Math.Abs(player.transform.position.y)) >= configData.normalVehicles.tugboat.Distance
                             if (vehicle.VehicleType == "Tugboat" && Vector3.Distance(spawnPos, player.transform.position)
-                                    <= configData.normalVehicles.tugboat.Distance && spawnPos.y - player.transform.position.y <= configData.normalVehicles.tugboat.Distance)
+                                    < configData.normalVehicles.tugboat.Distance && spawnPos.y - player.transform.position.y < configData.normalVehicles.tugboat.Distance)
                             {
                                 spawnPos += player.eyes.MovementForward() * configData.normalVehicles.tugboat.Distance;
                             }
@@ -3659,7 +3658,9 @@ namespace Oxide.Plugins
                         if (TryGetCenterOfFloorNearby(ref spawnPos))
                         {
                             needGetGround = false; //At the floor
-                            if(vehicle.VehicleType == "TransportHelicopter") spawnPos += player.eyes.MovementForward() * configData.normalVehicles.transportHelicopter.Distance;
+                            if(vehicle.VehicleType == "TransportHelicopter" && Vector3.Distance(spawnPos, player.transform.position) 
+                               < configData.normalVehicles.transportHelicopter.Distance) 
+                            {spawnPos += player.eyes.MovementForward() * configData.normalVehicles.transportHelicopter.Distance;}
                         }
                     }
                     if (needGetGround)
@@ -3668,7 +3669,7 @@ namespace Oxide.Plugins
                         if (IsWaterVehicle && (int)player.transform.position.y >= -1 && spawnPos.y <= -1)
                         {
                             if (vehicle.VehicleType == "Tugboat" && Vector3.Distance(spawnPos, player.transform.position) 
-                                <= configData.normalVehicles.tugboat.Distance && spawnPos.y - player.transform.position.y <= configData.normalVehicles.tugboat.Distance)
+                                < configData.normalVehicles.tugboat.Distance && spawnPos.y - player.transform.position.y < configData.normalVehicles.tugboat.Distance)
                             {
                                 spawnPos += player.eyes.MovementForward() * configData.normalVehicles.tugboat.Distance;
                             }
@@ -3677,13 +3678,15 @@ namespace Oxide.Plugins
                         else if (IsWaterVehicle && (int)player.transform.position.y < -1)
                         {
                             if (vehicle.VehicleType == "Tugboat" && Vector3.Distance(spawnPos, player.transform.position) 
-                                <= configData.normalVehicles.tugboat.Distance && spawnPos.y - player.transform.position.y <= configData.normalVehicles.tugboat.Distance)
+                                < configData.normalVehicles.tugboat.Distance && spawnPos.y - player.transform.position.y < configData.normalVehicles.tugboat.Distance)
                             {
                                 spawnPos += player.eyes.MovementForward() * configData.normalVehicles.tugboat.Distance;
                             }
                             spawnPos.y = player.transform.position.y;
                         }
-                        if(vehicle.VehicleType == "TransportHelicopter") spawnPos += player.eyes.MovementForward() * configData.normalVehicles.transportHelicopter.Distance;
+                        if(vehicle.VehicleType == "TransportHelicopter" && Vector3.Distance(spawnPos, player.transform.position) 
+                            < configData.normalVehicles.transportHelicopter.Distance) 
+                        {spawnPos += player.eyes.MovementForward() * configData.normalVehicles.transportHelicopter.Distance;}
                     }
                 }
                 else
