@@ -19,7 +19,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Vehicle Licence", "Sorrow/TheDoc/Arainrr", "1.7.44")]
+    [Info("Vehicle Licence", "Sorrow/TheDoc/Arainrr", "1.7.45")]
     [Description("Allows players to buy vehicles and then spawn or store it")]
     public class VehicleLicence : RustPlugin
     {
@@ -3619,6 +3619,24 @@ namespace Oxide.Plugins
                     reason = Instance.Lang("NotLookingAtWater", player.UserIDString, DisplayName);
                     return false;
                 }
+                RaycastHit hit;
+                if (IsWaterVehicle && Physics.Raycast(original, player.eyes.MovementForward(), out hit, 100))
+                {
+                    if(hit.GetEntity() is PaddlingPool)
+                    {
+                        reason = Instance.Lang("NotLookingAtWater", player.UserIDString, DisplayName);
+                        return false;
+                    }
+                    List<BaseEntity> pools = Pool.GetList<BaseEntity>();
+                    Vis.Entities(original, 0.5f, pools, Layers.Mask.Deployed);
+                    if (pools.Any(x => x is PaddlingPool))
+                    {
+                        reason = Instance.Lang("NotLookingAtWater", player.UserIDString, DisplayName);
+                        Pool.FreeList(ref pools);
+                        return false;
+                    }
+                    Pool.FreeList(ref pools);
+                }
                 reason = null;
                 return true;
             }
@@ -3642,6 +3660,7 @@ namespace Oxide.Plugins
                         {
                             needGetGround = false; //At the dock
                         }
+
                         if (IsWaterVehicle && (int)player.transform.position.y >= -1)
                         {
                             if (vehicle.VehicleType == "Tugboat" && Vector3.Distance(spawnPos, player.transform.position) < configData.normalVehicles.tugboat.Distance 
