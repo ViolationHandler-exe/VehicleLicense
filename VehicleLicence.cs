@@ -1,6 +1,7 @@
 // #define DEBUG
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -19,14 +20,14 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Vehicle Licence", "Sorrow/TheDoc/Arainrr", "1.7.45")]
+    [Info("Vehicle Licence", "Sorrow/TheDoc/Arainrr", "1.7.46")]
     [Description("Allows players to buy vehicles and then spawn or store it")]
     public class VehicleLicence : RustPlugin
     {
         #region Fields
 
         [PluginReference]
-        private readonly Plugin Economics, ServerRewards, Friends, Clans, NoEscape, LandOnCargoShip, RustTranslationAPI;
+        private readonly Plugin Economics, ServerRewards, Friends, Clans, NoEscape, LandOnCargoShip, RustTranslationAPI, ZoneManager;
 
         private const string PERMISSION_USE = "vehiclelicence.use";
         private const string PERMISSION_ALL = "vehiclelicence.all";
@@ -72,10 +73,17 @@ namespace Oxide.Plugins
         private const string PREFAB_TRAINWAGON_UNLOADABLE_FUEL = "assets/content/vehicles/trains/wagons/trainwagonunloadablefuel.entity.prefab";
         private const string PREFAB_TRAINWAGON_UNLOADABLE_LOOT = "assets/content/vehicles/trains/wagons/trainwagonunloadableloot.entity.prefab";
         private const string PREFAB_CABOOSE = "assets/content/vehicles/trains/caboose/traincaboose.entity.prefab";
+        
+        // Defaults for Vehicle Modifications
+        private readonly float TUGBOAT_ENGINETHRUST = 200000f;
+        private readonly float HELICOPTER_LIFT = 0.25f;
+        private readonly Vector3 SCRAP_HELICOPTER_TORQUE = new Vector3(8000.0f, 8000.0f, 4000.0f);
+        private readonly Vector3 MINICOPTER_TORQUE = new Vector3(400.0f, 400.0f, 200.0f);
 
         private const int LAYER_GROUND = Layers.Solid | Layers.Mask.Water;
 
         private readonly object _false = false;
+        private bool finishedLoading = false;
 
         public static VehicleLicence Instance { get; private set; }
 
@@ -212,33 +220,51 @@ namespace Oxide.Plugins
 
         private void OnServerInitialized()
         {
-            var currentTimestamp = TimeEx.currentTimestamp;
-            foreach (var playerData in storedData.playerData)
-            {
-                foreach (var entry in playerData.Value)
-                {
-                    entry.Value.PlayerId = playerData.Key;
-                    entry.Value.VehicleType = entry.Key;
-                    if (configData.global.storeVehicle)
-                    {
-                        entry.Value.LastRecall = entry.Value.LastDismount = currentTimestamp;
-                        if (entry.Value.EntityId == 0)
-                        {
-                            continue;
-                        }
-                        NetworkableId id = new NetworkableId(entry.Value.EntityId);
-                        entry.Value.Entity = BaseNetworkable.serverEntities.Find(id) as BaseEntity;
-                        if (entry.Value.Entity == null || entry.Value.Entity.IsDestroyed)
-                        {
-                            entry.Value.EntityId = 0;
-                        }
-                        else
-                        {
-                            vehiclesCache.Add(entry.Value.Entity, entry.Value);
-                        }
-                    }
-                }
-            }
+            // TODO: Convert into Coroutine.
+            ServerMgr.Instance.StartCoroutine(UpdatePlayerData(TimeEx.currentTimestamp));
+            // foreach (var playerData in storedData.playerData)
+            // {
+            //     foreach (var entry in playerData.Value)
+            //     {
+            //         entry.Value.PlayerId = playerData.Key;
+            //         entry.Value.VehicleType = entry.Key;
+            //         if (configData.global.storeVehicle)
+            //         {
+            //             entry.Value.LastRecall = entry.Value.LastDismount = currentTimestamp;
+            //             if (entry.Value.EntityId == 0)
+            //             {
+            //                 continue;
+            //             }
+            //             NetworkableId id = new NetworkableId(entry.Value.EntityId);
+            //             entry.Value.Entity = BaseNetworkable.serverEntities.Find(id) as BaseEntity;
+            //             if (entry.Value.Entity == null || entry.Value.Entity.IsDestroyed)
+            //             {
+            //                 entry.Value.EntityId = 0;
+            //             }
+            //             else
+            //             {
+            //                 vehiclesCache.Add(entry.Value.Entity, entry.Value);
+            //                 if (entry.Value.Entity is Tugboat)
+            //                 {
+            //                     Tugboat vehicle = entry.Value.Entity as Tugboat;
+            //                     vehicle.engineThrust = TUGBOAT_ENGINETHRUST*configData.normalVehicles.tugboat.speedMultiplier;
+            //                 }
+            //                 else if (entry.Value.Entity is ScrapTransportHelicopter)
+            //                 {
+            //                     ScrapTransportHelicopter vehicle = entry.Value.Entity as ScrapTransportHelicopter;
+            //                     vehicle.liftFraction = configData.normalVehicles.transportHelicopter.liftFraction;
+            //                     vehicle.torqueScale = SCRAP_HELICOPTER_TORQUE*configData.normalVehicles.transportHelicopter.rotationScale;
+            //                 }
+            //                 else if (entry.Value.Entity is MiniCopter)
+            //                 {
+            //                     MiniCopter vehicle = entry.Value.Entity as MiniCopter;
+            //                     vehicle.liftFraction = configData.normalVehicles.miniCopter.liftFraction;
+            //                     vehicle.torqueScale = MINICOPTER_TORQUE*configData.normalVehicles.miniCopter.rotationScale;
+            //                 }
+            //             }
+            //         }
+            //     }
+            // }
             if (configData.global.preventMounting)
             {
                 Subscribe(nameof(CanMountEntity));
@@ -290,28 +316,19 @@ namespace Oxide.Plugins
             timer.Once(Random.Range(0f, 60f), SaveData);
         }
 
-        private void OnPlayerConnected(BasePlayer player)
-        {
-            if (player == null || !player.userID.IsSteamId())
-            {
-                return;
-            }
-            if (permission.UserHasPermission(player.UserIDString, PERMISSION_BYPASS_COST))
-            {
-                PurchaseAllVehicles(player.userID);
-            }
-        }
-
         private void OnEntityDismounted(BaseMountable entity, BasePlayer player)
         {
             if (entity == null)
             {
                 return;
             }
-            if (configData.normalVehicles.miniCopter.flyHackPause > 0 && entity.GetParentEntity() is MiniCopter)
+            if (player != null && configData.normalVehicles.miniCopter.flyHackPause > 0 && entity.GetParentEntity() is MiniCopter)
             {
-                player.PauseFlyHackDetection(entity.GetParentEntity() is ScrapTransportHelicopter ?
-                    configData.normalVehicles.transportHelicopter.flyHackPause : configData.normalVehicles.miniCopter.flyHackPause);
+                player.PauseFlyHackDetection(configData.normalVehicles.miniCopter.flyHackPause);
+            }
+            else if (player != null && configData.normalVehicles.transportHelicopter.flyHackPause > 0 && entity.GetParentEntity() is ScrapTransportHelicopter)
+            {
+                player.PauseFlyHackDetection(configData.normalVehicles.transportHelicopter.flyHackPause);
             }
             var vehicleParent = entity.VehicleParent();
             if (vehicleParent == null || vehicleParent.IsDestroyed)
@@ -927,6 +944,12 @@ namespace Oxide.Plugins
         {
             return (bool)NoEscape.Call("IsCombatBlocked", playerId);
         }
+        
+        private bool InZone(BasePlayer player)
+        {
+            if (ZoneManager == null || !ZoneManager.IsLoaded) return false;
+            return configData.AntiSpawnZones.Any(x => (bool)ZoneManager?.Call("PlayerHasFlag", player, x.ToLower()));
+        }
 
         #endregion IsPlayerBlocked
 
@@ -1091,6 +1114,62 @@ namespace Oxide.Plugins
                 }
             }
             return true;
+        }
+        
+        private IEnumerator UpdatePlayerData(double currentTimestamp)
+        {
+            foreach (var playerData in storedData.playerData)
+            {
+                foreach (var entry in playerData.Value)
+                {
+                    entry.Value.PlayerId = playerData.Key;
+                    entry.Value.VehicleType = entry.Key;
+                    if (configData.global.storeVehicle)
+                    {
+                        entry.Value.LastRecall = entry.Value.LastDismount = currentTimestamp;
+                        if (entry.Value.EntityId == 0)
+                        {
+                            continue;
+                        }
+                        NetworkableId id = new NetworkableId(entry.Value.EntityId);
+                        entry.Value.Entity = BaseNetworkable.serverEntities.Find(id) as BaseEntity;
+                        if (entry.Value.Entity == null || entry.Value.Entity.IsDestroyed)
+                        {
+                            entry.Value.EntityId = 0;
+                        }
+                        else
+                        {
+                            vehiclesCache.Add(entry.Value.Entity, entry.Value);
+                            if (entry.Value.Entity is Tugboat)
+                            {
+                                Tugboat vehicle = entry.Value.Entity as Tugboat;
+                                vehicle.engineThrust = TUGBOAT_ENGINETHRUST * configData.normalVehicles.tugboat.speedMultiplier;
+                            }
+                            else if (entry.Value.Entity is ScrapTransportHelicopter)
+                            {
+                                ScrapTransportHelicopter vehicle = entry.Value.Entity as ScrapTransportHelicopter;
+                                vehicle.liftFraction = configData.normalVehicles.transportHelicopter.liftFraction;
+                                vehicle.torqueScale = SCRAP_HELICOPTER_TORQUE * configData.normalVehicles.transportHelicopter.rotationScale;
+                            }
+                            else if (entry.Value.Entity is MiniCopter)
+                            {
+                                MiniCopter vehicle = entry.Value.Entity as MiniCopter;
+                                vehicle.liftFraction = configData.normalVehicles.miniCopter.liftFraction;
+                                vehicle.torqueScale = MINICOPTER_TORQUE * configData.normalVehicles.miniCopter.rotationScale;
+                            }
+                        }
+                    }
+                    // Adjust the delay duration here if needed
+                    yield return new WaitForSeconds(0.1f);
+                }
+            }
+
+            // timer.Once(2f, () =>
+            // {
+            //     finishedLoading = true;
+            // });
+            finishedLoading = true;
+            // Coroutine finished
         }
 
         #region Helpers
@@ -1312,12 +1391,18 @@ namespace Oxide.Plugins
 
         private void HandleUniversalCmd(BasePlayer player, string vehicleType, bool bypassCooldown, string command)
         {
+            if (!finishedLoading)
+            {
+                Print(player, Lang("PleaseWait", player.UserIDString));
+                return;
+            }
             Vehicle vehicle;
+            
+            string reason;
+            var position = Vector3.zero;
+            var rotation = Quaternion.identity;
             if (storedData.IsVehiclePurchased(player.userID, vehicleType, out vehicle))
             {
-                string reason;
-                var position = Vector3.zero;
-                var rotation = Quaternion.identity;
                 if (vehicle.Entity != null && !vehicle.Entity.IsDestroyed)
                 {
                     //recall
@@ -1339,8 +1424,30 @@ namespace Oxide.Plugins
                 Print(player, reason);
                 return;
             }
-            //buy
-            BuyVehicle(player, vehicleType);
+            //buy - Auto spawns the vehicle when buying it via universal command
+            if (BuyVehicle(player, vehicleType))
+            {
+                storedData.IsVehiclePurchased(player.userID, vehicleType, out vehicle);
+                if (vehicle.Entity != null && !vehicle.Entity.IsDestroyed)
+                {
+                    //recall
+                    if (CanRecall(player, vehicle, bypassCooldown, command, out reason, ref position, ref rotation))
+                    {
+                        RecallVehicle(player, vehicle, position, rotation);
+                        return;
+                    }
+                }
+                else
+                {
+                    //spawn
+                    if (CanSpawn(player, vehicle, bypassCooldown, command, out reason, ref position, ref rotation))
+                    {
+                        SpawnVehicle(player, vehicle, position, rotation);
+                        return;
+                    }
+                }
+                Print(player, reason);
+            }
         }
 
         #endregion Universal Command
@@ -1632,10 +1739,17 @@ namespace Oxide.Plugins
         {
             var settings = GetBaseVehicleSettings(vehicleType);
             Vehicle vehicle;
-            if (!storedData.IsVehiclePurchased(player.userID, vehicleType, out vehicle))
+            if (!storedData.IsVehiclePurchased(player.userID, vehicleType, out vehicle)
+                && !permission.UserHasPermission(player.UserIDString, PERMISSION_BYPASS_COST))
             {
                 Print(player, Lang("VehicleNotYetPurchased", player.UserIDString, settings.DisplayName, configData.chat.buyCommand));
                 return false;
+            }
+            if (!storedData.IsVehiclePurchased(player.userID, vehicleType, out vehicle)
+                     && permission.UserHasPermission(player.UserIDString, PERMISSION_BYPASS_COST))
+            {
+                BuyVehicle(player, vehicleType);
+                vehicle = storedData.GetVehicleLicense(player.userID, vehicleType);
             }
             if (vehicle.Entity != null && !vehicle.Entity.IsDestroyed)
             {
@@ -1705,6 +1819,12 @@ namespace Oxide.Plugins
                 reason = Lang("NoResourcesToSpawnVehicle", player.UserIDString, settings.DisplayName, resources);
                 return false;
             }
+            
+            if (InZone(player))
+            {
+                reason = Lang("NoSpawnInZone", player.UserIDString, settings.DisplayName);
+                return false;
+            }
 
             if (randomVehicle != null)
             {
@@ -1714,7 +1834,7 @@ namespace Oxide.Plugins
             return true;
         }
 
-        private void SpawnVehicle(BasePlayer player, Vehicle vehicle, Vector3 position, Quaternion rotation)
+        private void SpawnVehicle(BasePlayer player, Vehicle vehicle, Vector3 position, Quaternion rotation, bool response = true)
         {
             var settings = GetBaseVehicleSettings(vehicle.VehicleType);
             var entity = settings.SpawnVehicle(player, vehicle, position, rotation);
@@ -1722,6 +1842,8 @@ namespace Oxide.Plugins
             {
                 return;
             }
+
+            if (!response) return;
             Interface.CallHook("OnLicensedVehicleSpawned", entity, player, vehicle.VehicleType);
             Print(player, Lang("VehicleSpawned", player.UserIDString, settings.DisplayName));
         }
@@ -1860,6 +1982,12 @@ namespace Oxide.Plugins
                 reason = Lang("NoResourcesToRecallVehicle", player.UserIDString, settings.DisplayName, resources);
                 return false;
             }
+
+            if (InZone(player))
+            {
+                reason = Lang("NoRecallInZone", player.UserIDString, settings.DisplayName);
+                return false;
+            }
             reason = null;
             return true;
         }
@@ -1867,11 +1995,28 @@ namespace Oxide.Plugins
         private void RecallVehicle(BasePlayer player, Vehicle vehicle, Vector3 position, Quaternion rotation)
         {
             var settings = GetBaseVehicleSettings(vehicle.VehicleType);
-
             settings.PreRecallVehicle(player, vehicle, position, rotation);
-            vehicle.Entity.transform.SetPositionAndRotation(position, rotation);
-            vehicle.Entity.transform.hasChanged = true;
-            settings.PostRecallVehicle(player, vehicle, position, rotation);
+            if(configData.global.recallKill)
+            {
+                if (vehicle.Entity is Tugboat)
+                {
+                    Puts($"Entities on Tugboat? {(vehicle.Entity as Tugboat).children.Count}");
+                    vehicle.Entity.transform.SetPositionAndRotation(position, rotation);
+                    vehicle.Entity.transform.hasChanged = true;
+                    settings.PostRecallVehicle(player, vehicle, position, rotation);
+                }
+                else
+                {
+                    KillVehicle(player, vehicle.VehicleType, false);
+                    SpawnVehicle(player, vehicle, position, rotation, false);
+                }
+            }
+            else
+            {
+                vehicle.Entity.transform.SetPositionAndRotation(position, rotation);
+                vehicle.Entity.transform.hasChanged = true;
+                settings.PostRecallVehicle(player, vehicle, position, rotation);
+            }
 
             vehicle.OnRecall();
 
@@ -1945,7 +2090,7 @@ namespace Oxide.Plugins
             }
         }
 
-        private bool KillVehicle(BasePlayer player, string vehicleType)
+        private bool KillVehicle(BasePlayer player, string vehicleType, bool response = true)
         {
             var settings = GetBaseVehicleSettings(vehicleType);
             Vehicle vehicle;
@@ -1961,6 +2106,7 @@ namespace Oxide.Plugins
                     return false;
                 }
                 vehicle.Entity.Kill(BaseNetworkable.DestroyMode.Gib);
+                if (!response) return true;
                 Print(player, Lang("VehicleKilled", player.UserIDString, settings.DisplayName));
                 return true;
             }
@@ -2167,6 +2313,9 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Chat Settings")]
             public ChatSettings chat = new ChatSettings();
+            
+            [JsonProperty(PropertyName = "Zones to prevent users from spawning vehicles within.", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            public List<string> AntiSpawnZones = new List<string> { "KeepVehiclesOut" };
 
             [JsonProperty(PropertyName = "Normal Vehicle Settings")]
             public NormalVehicleSettings normalVehicles = new NormalVehicleSettings();
@@ -2561,6 +2710,9 @@ namespace Oxide.Plugins
 
         public class GlobalSettings
         {
+            [JsonProperty(PropertyName = "Kill all vehicles on recall and respawn instead of recalling (besides Tugboat)")]
+            public bool recallKill = false;
+            
             [JsonProperty(PropertyName = "Store Vehicle On Plugin Unloaded / Server Restart")]
             public bool storeVehicle = true;
 
@@ -2835,9 +2987,7 @@ namespace Oxide.Plugins
                 DisplayName = "Mini Copter",
                 Distance = 8,
                 MinDistanceForPlayers = 2,
-                torqueScalePitch = 400f,
-                torqueScaleYaw = 400f,
-                torqueScaleRoll = 200f,
+                rotationScale = 1.0f,
                 flyHackPause = 0,
                 liftFraction = 0.25f,
                 UsePermission = true,
@@ -2864,10 +3014,10 @@ namespace Oxide.Plugins
             {
                 Purchasable = true,
                 DisplayName = "Transport Copter",
-                Distance = 10,
+                Distance = 7,
                 MinDistanceForPlayers = 4,
-                flyHackPause = 12,
-                rotationScale = 2.0f,
+                flyHackPause = 0,
+                rotationScale = 1.0f,
                 liftFraction = .75f,
                 UsePermission = true,
                 Permission = "vehiclelicence.transportcopter",
@@ -3240,7 +3390,7 @@ namespace Oxide.Plugins
                 if (!entity.IsDestroyed)
                 {
                     Instance.CacheVehicleEntity(entity, vehicle, player);
-                    if (entity as Tugboat != null)
+                    if (entity is Tugboat)
                     {
                         Tugboat tug = entity as Tugboat;
                         tug.engineThrust *= configData.normalVehicles.tugboat.speedMultiplier;
@@ -3249,13 +3399,14 @@ namespace Oxide.Plugins
                     if (entity as MiniCopter != null)
                     {
                         MiniCopter mini = entity as MiniCopter;
-                        if (entity as ScrapTransportHelicopter != null)
+                        if (entity is ScrapTransportHelicopter)
                         {
                             mini.torqueScale *= configData.normalVehicles.transportHelicopter.rotationScale;
                             mini.liftFraction = configData.normalVehicles.transportHelicopter.liftFraction;
                             return entity;
                         }
-                        mini.torqueScale = new Vector3(configData.normalVehicles.miniCopter.torqueScalePitch, configData.normalVehicles.miniCopter.torqueScaleYaw, configData.normalVehicles.miniCopter.torqueScaleRoll);
+                        // mini.torqueScale = new Vector3(configData.normalVehicles.miniCopter.torqueScalePitch, configData.normalVehicles.miniCopter.torqueScaleYaw, configData.normalVehicles.miniCopter.torqueScaleRoll);
+                        mini.torqueScale *= configData.normalVehicles.miniCopter.rotationScale;
                         mini.liftFraction = configData.normalVehicles.miniCopter.liftFraction;
                     }
                 }
@@ -4000,17 +4151,11 @@ namespace Oxide.Plugins
         {
             public override bool IsFightVehicle => true;
             
-            [JsonProperty("Pitch Torque Scale")]
-            public float torqueScalePitch;
-            
-            [JsonProperty("Yaw Torque Scale")]
-            public float torqueScaleYaw;
-            
-            [JsonProperty("Roll Torque Scale")]
-            public float torqueScaleRoll;
-            
+            [JsonProperty("Rotation Scale")] 
+            public float rotationScale = 1.0f;
+
             [JsonProperty("Lift Fraction")]
-            public float liftFraction;
+            public float liftFraction = 0.25f;
             
             [JsonProperty("Seconds to pause flyhack when dismount from Mini Copter.")]
             public int flyHackPause;
@@ -4026,10 +4171,10 @@ namespace Oxide.Plugins
             public override bool IsFightVehicle => true;
             
             [JsonProperty("Lift Fraction")]
-            public float liftFraction;
+            public float liftFraction = 0.25f;
             
             [JsonProperty("Rotation Scale")] 
-            public float rotationScale;
+            public float rotationScale = 1.0f;
             
             [JsonProperty("Seconds to pause flyhack when dismount from Mini Copter.")]
             public int flyHackPause;
@@ -5365,8 +5510,9 @@ namespace Oxide.Plugins
                 ["HelpRecallPrice"] = "<color=#4DFF4D>/{0} {1}</color> -- To recall a <color=#009EFF>{2}</color>. Price: {3}",
                 ["HelpKill"] = "<color=#4DFF4D>/{0} {1}</color> -- To kill a <color=#009EFF>{2}</color>",
                 ["HelpKillCustom"] = "<color=#4DFF4D>/{0} {1}</color> or <color=#4DFF4D>/{2}</color>  -- To kill a <color=#009EFF>{3}</color>",
-
+                
                 ["NotAllowed"] = "You do not have permission to use this command.",
+                ["PleaseWait"] = "Please wait a little bit before using this command.",
                 ["RaidBlocked"] = "<color=#FF1919>You may not do that while raid blocked</color>.",
                 ["CombatBlocked"] = "<color=#FF1919>You may not do that while combat blocked</color>.",
                 ["OptionNotFound"] = "This <color=#009EFF>{0}</color> option doesn't exist.",
@@ -5399,6 +5545,8 @@ namespace Oxide.Plugins
                 ["KillTooFar"] = "You must be within <color=#FF1919>{0}</color> meters of <color=#009EFF>{1}</color> to kill.",
                 ["PlayersOnNearby"] = "You cannot spawn or recall a <color=#009EFF>{0}</color> when there are players near the position you are looking at.",
                 ["RecallWasBlocked"] = "An external plugin blocked you from recalling a <color=#009EFF>{0}</color>.",
+                ["NoRecallInZone"] = "No recalling a <color=#009EFF>{0}</color> in the zone.",
+                ["NoSpawnInZone"] = "No spawning a <color=#009EFF>{0}</color> in the zone.",
                 ["SpawnWasBlocked"] = "An external plugin blocked you from spawning a <color=#009EFF>{0}</color>.",
                 ["VehiclesLimit"] = "You can have up to <color=#009EFF>{0}</color> vehicles at a time.",
                 ["TooFarTrainTrack"] = "You are too far from the train track.",
@@ -5427,6 +5575,7 @@ namespace Oxide.Plugins
                 ["HelpKillCustom"] = "<color=#4DFF4D>/{0} {1}</color> 或者 <color=#4DFF4D>/{2}</color>  -- 摧毁一辆 <color=#009EFF>{3}</color>",
 
                 ["NotAllowed"] = "您没有权限使用该命令",
+                ["PleaseWait"] = "使用此命令之前请稍等一下",
                 ["RaidBlocked"] = "<color=#FF1919>您被突袭阻止了，不能使用该命令</color>",
                 ["CombatBlocked"] = "<color=#FF1919>您被战斗阻止了，不能使用该命令</color>",
                 ["OptionNotFound"] = "选项 <color=#009EFF>{0}</color> 不存在",
@@ -5459,6 +5608,8 @@ namespace Oxide.Plugins
                 ["KillTooFar"] = "您必须在 <color=#FF1919>{0}</color> 米内才能摧毁您的 <color=#009EFF>{1}</color>",
                 ["PlayersOnNearby"] = "您正在看着的位置附近有玩家时无法生成或召回 <color=#009EFF>{0}</color>",
                 ["RecallWasBlocked"] = "有其他插件阻止您召回 <color=#009EFF>{0}</color>.",
+                ["NoRecallInZone"] = "不召回该区域中的<color=#009EFF>{0}</color>.",
+                ["NoSpawnInZone"] = "不会在该区域生成 <color=#009EFF>{0}</color>.",
                 ["SpawnWasBlocked"] = "有其他插件阻止您生成 <color=#009EFF>{0}</color>.",
                 ["VehiclesLimit"] = "您在同一时间内最多可以拥有 <color=#009EFF>{0}</color> 辆载具",
                 ["TooFarTrainTrack"] = "您距离铁路轨道太远了",
@@ -5487,6 +5638,7 @@ namespace Oxide.Plugins
                 ["HelpKillCustom"] = "<color=#4DFF4D>/{0} {1}</color> или же <color=#4DFF4D>/{2}</color>  -- Уничтожить <color=#009EFF>{3}</color>",
 
                 ["NotAllowed"] = "У вас нет разрешения для использования данной команды.",
+                ["PleaseWait"] = "Пожалуйста, подождите немного, прежде чем использовать эту команду.",
                 ["RaidBlocked"] = "<color=#FF1919>Вы не можете это сделать из-за блокировки (рейд)</color>.",
                 ["CombatBlocked"] = "<color=#FF1919>Вы не можете это сделать из-за блокировки (бой)</color>.",
                 ["OptionNotFound"] = "Опция <color=#009EFF>{0}</color> не существует.",
@@ -5519,6 +5671,8 @@ namespace Oxide.Plugins
                 ["KillTooFar"] = "Вы должны быть в пределах <color=#FF1919>{0}</color> метров от <color=#009EFF>{1}</color>, уничтожить.",
                 ["PlayersOnNearby"] = "Вы не можете создать <color=#009EFF>{0}</color> когда рядом с той позицией, на которую вы смотрите, есть игроки.",
                 ["RecallWasBlocked"] = "Внешний плагин заблокировал вам вызвать <color=#009EFF>{0}</color>.",
+                ["NoRecallInZone"] = "Нет отзыва <color=#009EFF>{0}</color> в зоне.",
+                ["NoSpawnInZone"] = "В зоне не создается <color=#009EFF>{0}</color>.",
                 ["SpawnWasBlocked"] = "Внешний плагин заблокировал вам создать <color=#009EFF>{0}</color>.",
                 ["VehiclesLimit"] = "У вас может быть до <color=#009EFF>{0}</color> автомобилей одновременно",
                 ["TooFarTrainTrack"] = "Вы слишком далеко от железнодорожных путей",
