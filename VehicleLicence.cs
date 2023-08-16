@@ -20,7 +20,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Vehicle Licence", "Sorrow/TheDoc/Arainrr", "1.7.46")]
+    [Info("Vehicle Licence", "Sorrow/TheDoc/Arainrr", "1.7.47")]
     [Description("Allows players to buy vehicles and then spawn or store it")]
     public class VehicleLicence : RustPlugin
     {
@@ -216,55 +216,12 @@ namespace Oxide.Plugins
             Unsubscribe(nameof(CanLootEntity));
             Unsubscribe(nameof(OnEntitySpawned));
             Unsubscribe(nameof(OnRidableAnimalClaimed));
+            Unsubscribe(nameof(OnEngineStarted));
         }
 
         private void OnServerInitialized()
         {
-            // TODO: Convert into Coroutine.
             ServerMgr.Instance.StartCoroutine(UpdatePlayerData(TimeEx.currentTimestamp));
-            // foreach (var playerData in storedData.playerData)
-            // {
-            //     foreach (var entry in playerData.Value)
-            //     {
-            //         entry.Value.PlayerId = playerData.Key;
-            //         entry.Value.VehicleType = entry.Key;
-            //         if (configData.global.storeVehicle)
-            //         {
-            //             entry.Value.LastRecall = entry.Value.LastDismount = currentTimestamp;
-            //             if (entry.Value.EntityId == 0)
-            //             {
-            //                 continue;
-            //             }
-            //             NetworkableId id = new NetworkableId(entry.Value.EntityId);
-            //             entry.Value.Entity = BaseNetworkable.serverEntities.Find(id) as BaseEntity;
-            //             if (entry.Value.Entity == null || entry.Value.Entity.IsDestroyed)
-            //             {
-            //                 entry.Value.EntityId = 0;
-            //             }
-            //             else
-            //             {
-            //                 vehiclesCache.Add(entry.Value.Entity, entry.Value);
-            //                 if (entry.Value.Entity is Tugboat)
-            //                 {
-            //                     Tugboat vehicle = entry.Value.Entity as Tugboat;
-            //                     vehicle.engineThrust = TUGBOAT_ENGINETHRUST*configData.normalVehicles.tugboat.speedMultiplier;
-            //                 }
-            //                 else if (entry.Value.Entity is ScrapTransportHelicopter)
-            //                 {
-            //                     ScrapTransportHelicopter vehicle = entry.Value.Entity as ScrapTransportHelicopter;
-            //                     vehicle.liftFraction = configData.normalVehicles.transportHelicopter.liftFraction;
-            //                     vehicle.torqueScale = SCRAP_HELICOPTER_TORQUE*configData.normalVehicles.transportHelicopter.rotationScale;
-            //                 }
-            //                 else if (entry.Value.Entity is MiniCopter)
-            //                 {
-            //                     MiniCopter vehicle = entry.Value.Entity as MiniCopter;
-            //                     vehicle.liftFraction = configData.normalVehicles.miniCopter.liftFraction;
-            //                     vehicle.torqueScale = MINICOPTER_TORQUE*configData.normalVehicles.miniCopter.rotationScale;
-            //                 }
-            //             }
-            //         }
-            //     }
-            // }
             if (configData.global.preventMounting)
             {
                 Subscribe(nameof(CanMountEntity));
@@ -290,6 +247,10 @@ namespace Oxide.Plugins
             {
                 Subscribe(nameof(OnEntityDismounted));
                 timer.Every(configData.global.checkVehiclesInterval, CheckVehicles);
+            }
+            if(configData.global.InstantMiniTakeoff)
+            {
+                Subscribe(nameof(OnEngineStarted));
             }
         }
 
@@ -1163,13 +1124,7 @@ namespace Oxide.Plugins
                     yield return new WaitForSeconds(0.1f);
                 }
             }
-
-            // timer.Once(2f, () =>
-            // {
-            //     finishedLoading = true;
-            // });
             finishedLoading = true;
-            // Coroutine finished
         }
 
         #region Helpers
@@ -1820,7 +1775,8 @@ namespace Oxide.Plugins
                 return false;
             }
             
-            if (InZone(player))
+            // This prevents horse spawns/recalls as well
+            if (!configData.CanSpawnInZones && InZone(player))
             {
                 reason = Lang("NoSpawnInZone", player.UserIDString, settings.DisplayName);
                 return false;
@@ -1842,9 +1798,9 @@ namespace Oxide.Plugins
             {
                 return;
             }
-
-            if (!response) return;
+            
             Interface.CallHook("OnLicensedVehicleSpawned", entity, player, vehicle.VehicleType);
+            if (!response) return;
             Print(player, Lang("VehicleSpawned", player.UserIDString, settings.DisplayName));
         }
 
@@ -1983,7 +1939,8 @@ namespace Oxide.Plugins
                 return false;
             }
 
-            if (InZone(player))
+            // This prevents horse spawns/recalls as well
+            if (!configData.CanSpawnInZones && InZone(player))
             {
                 reason = Lang("NoRecallInZone", player.UserIDString, settings.DisplayName);
                 return false;
@@ -2000,7 +1957,7 @@ namespace Oxide.Plugins
             {
                 if (vehicle.Entity is Tugboat)
                 {
-                    Puts($"Entities on Tugboat? {(vehicle.Entity as Tugboat).children.Count}");
+                    // Puts($"Entities on Tugboat? {(vehicle.Entity as Tugboat).children.Count}");
                     vehicle.Entity.transform.SetPositionAndRotation(position, rotation);
                     vehicle.Entity.transform.hasChanged = true;
                     settings.PostRecallVehicle(player, vehicle, position, rotation);
@@ -2013,6 +1970,10 @@ namespace Oxide.Plugins
             }
             else
             {
+                // if (vehicle.Entity is Tugboat)
+                // {
+                //     Puts($"Entities on Tugboat? {(vehicle.Entity as Tugboat).children.Count}");
+                // }
                 vehicle.Entity.transform.SetPositionAndRotation(position, rotation);
                 vehicle.Entity.transform.hasChanged = true;
                 settings.PostRecallVehicle(player, vehicle, position, rotation);
@@ -2314,7 +2275,10 @@ namespace Oxide.Plugins
             [JsonProperty(PropertyName = "Chat Settings")]
             public ChatSettings chat = new ChatSettings();
             
-            [JsonProperty(PropertyName = "Zones to prevent users from spawning vehicles within.", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+            [JsonProperty("Allow vehicles to be spawned/recalled in zones listed in prevent spawning zones")]
+            public bool CanSpawnInZones = false;
+            
+            [JsonProperty(PropertyName = "Zones to prevent users from spawning/recalled vehicles within.", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<string> AntiSpawnZones = new List<string> { "KeepVehiclesOut" };
 
             [JsonProperty(PropertyName = "Normal Vehicle Settings")]
@@ -2796,6 +2760,9 @@ namespace Oxide.Plugins
 
             [JsonProperty(PropertyName = "Use Combat Blocker (Need NoEscape Plugin)")]
             public bool useCombatBlocker;
+            
+            [JsonProperty(PropertyName = "Allow minicopters to take off instantly")]
+            public bool InstantMiniTakeoff = false;
         }
 
         public class NormalVehicleSettings
@@ -3018,7 +2985,7 @@ namespace Oxide.Plugins
                 MinDistanceForPlayers = 4,
                 flyHackPause = 0,
                 rotationScale = 1.0f,
-                liftFraction = .75f,
+                liftFraction = .25f,
                 UsePermission = true,
                 Permission = "vehiclelicence.transportcopter",
                 Commands = new List<string>
@@ -3405,7 +3372,6 @@ namespace Oxide.Plugins
                             mini.liftFraction = configData.normalVehicles.transportHelicopter.liftFraction;
                             return entity;
                         }
-                        // mini.torqueScale = new Vector3(configData.normalVehicles.miniCopter.torqueScalePitch, configData.normalVehicles.miniCopter.torqueScaleYaw, configData.normalVehicles.miniCopter.torqueScaleRoll);
                         mini.torqueScale *= configData.normalVehicles.miniCopter.rotationScale;
                         mini.liftFraction = configData.normalVehicles.miniCopter.liftFraction;
                     }
@@ -4176,7 +4142,7 @@ namespace Oxide.Plugins
             [JsonProperty("Rotation Scale")] 
             public float rotationScale = 1.0f;
             
-            [JsonProperty("Seconds to pause flyhack when dismount from Mini Copter.")]
+            [JsonProperty("Seconds to pause flyhack when dismount from Transport Scrap Helicopter.")]
             public int flyHackPause;
             
             protected override EntityFuelSystem GetFuelSystem(BaseEntity entity)
