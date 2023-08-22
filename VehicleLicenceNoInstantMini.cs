@@ -3,6 +3,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using Facepunch;
@@ -16,6 +17,7 @@ using Oxide.Game.Rust;
 using Rust;
 using Rust.Modular;
 using UnityEngine;
+using Debug = UnityEngine.Debug;
 using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
@@ -1126,7 +1128,7 @@ namespace Oxide.Plugins
             }
             finishedLoading = true;
         }
-
+        
         #region Helpers
 
         private static NormalVehicleType? GetClaimableVehicleType(BaseVehicle baseVehicle)
@@ -1268,6 +1270,40 @@ namespace Oxide.Plugins
             player.ForceUpdateTriggers();
             //if (player.HasParent()) player.SetParent(null, true, true);
             player.SendNetworkUpdateImmediate();
+        }
+        
+        // Authorizes player and their team.
+        private static void AuthTeamOnTugboat(Tugboat tug, BasePlayer player, bool clear = false)
+        {
+            RelationshipManager.PlayerTeam team = RelationshipManager.ServerInstance.FindPlayersTeam(player.userID);
+            VehiclePrivilege vehiclePrivilege;
+            if (team == null || team.members.Count == 1)
+            {
+                foreach (BaseEntity child in tug.children)
+                {
+                    vehiclePrivilege = child as VehiclePrivilege;
+                    if (vehiclePrivilege == null) continue;
+                    if(clear) vehiclePrivilege.authorizedPlayers.Clear();
+                    vehiclePrivilege.AddPlayer(player);
+                }
+            }
+            else
+            {
+                BasePlayer teammate;
+                foreach (BaseEntity child in tug.children)
+                {
+                    vehiclePrivilege = child as VehiclePrivilege;
+                    if (vehiclePrivilege == null) continue;
+                    if(clear) vehiclePrivilege.authorizedPlayers.Clear();
+                    vehiclePrivilege.AddPlayer(player);
+                    foreach (ulong id in team.members)
+                    {
+                        teammate = BasePlayer.FindByID(id);
+                        if (teammate == null) continue;
+                        vehiclePrivilege.AddPlayer(teammate);
+                    }
+                }
+            }
         }
 
         #region Train Car
@@ -1957,10 +1993,24 @@ namespace Oxide.Plugins
             {
                 if (vehicle.Entity is Tugboat)
                 {
-                    // Puts($"Entities on Tugboat? {(vehicle.Entity as Tugboat).children.Count}");
-                    vehicle.Entity.transform.SetPositionAndRotation(position, rotation);
-                    vehicle.Entity.transform.hasChanged = true;
-                    settings.PostRecallVehicle(player, vehicle, position, rotation);
+                    Tugboat tug = vehicle.Entity as Tugboat;
+                    if (tug.children.Count < 4)
+                    {
+                        KillVehicle(player, vehicle.VehicleType, false);
+                        SpawnVehicle(player, vehicle, position, rotation, false);
+                        AuthTeamOnTugboat(tug, player);
+                    }
+                    else
+                    {
+                        tug.transform.SetPositionAndRotation(position, rotation);
+                        tug.transform.hasChanged = true;
+                        if(configData.normalVehicles.tugboat.autoAuth)
+                        {
+                            AuthTeamOnTugboat(tug, player, true);
+                        }
+                        settings.PostRecallVehicle(player, vehicle, position, rotation);
+                    }
+                    
                 }
                 else
                 {
@@ -1970,10 +2020,11 @@ namespace Oxide.Plugins
             }
             else
             {
-                // if (vehicle.Entity is Tugboat)
-                // {
-                //     Puts($"Entities on Tugboat? {(vehicle.Entity as Tugboat).children.Count}");
-                // }
+                if (vehicle.Entity is Tugboat)
+                {
+                    Tugboat tug = vehicle.Entity as Tugboat;
+                    AuthTeamOnTugboat(tug, player, true);
+                }
                 vehicle.Entity.transform.SetPositionAndRotation(position, rotation);
                 vehicle.Entity.transform.hasChanged = true;
                 settings.PostRecallVehicle(player, vehicle, position, rotation);
@@ -2675,7 +2726,7 @@ namespace Oxide.Plugins
         public class GlobalSettings
         {
             [JsonProperty(PropertyName = "Kill all vehicles on recall and respawn instead of recalling (besides Tugboat)")]
-            public bool recallKill = false;
+            public bool recallKill = true;
             
             [JsonProperty(PropertyName = "Store Vehicle On Plugin Unloaded / Server Restart")]
             public bool storeVehicle = true;
@@ -2768,10 +2819,11 @@ namespace Oxide.Plugins
         public class NormalVehicleSettings
         {
             [JsonProperty(PropertyName = "Tugboat Vehicle", ObjectCreationHandling = ObjectCreationHandling.Replace)]
-            public TugboatSettings tugboat = new TugboatSettings {
-              Purchasable = true,
+            public TugboatSettings tugboat = new TugboatSettings { 
+                Purchasable = true,
                 DisplayName = "Tugboat",
                 speedMultiplier = 1,
+                autoAuth = true,
                 Distance = 10,
                 MinDistanceForPlayers = 3,
                 UsePermission = true,
@@ -2796,6 +2848,7 @@ namespace Oxide.Plugins
             {
                 Purchasable = true,
                 DisplayName = "Sedan",
+                speedMultiplier = 1,
                 Distance = 5,
                 MinDistanceForPlayers = 3,
                 UsePermission = true,
@@ -3357,32 +3410,10 @@ namespace Oxide.Plugins
                 if (!entity.IsDestroyed)
                 {
                     Instance.CacheVehicleEntity(entity, vehicle, player);
-                    if (entity is Tugboat)
-                    {
-                        Tugboat tug = entity as Tugboat;
-                        tug.engineThrust *= configData.normalVehicles.tugboat.speedMultiplier;
-                    }
-
-                    if (entity as MiniCopter != null)
-                    {
-                        MiniCopter mini = entity as MiniCopter;
-                        if (entity is ScrapTransportHelicopter)
-                        {
-                            mini.torqueScale *= configData.normalVehicles.transportHelicopter.rotationScale;
-                            mini.liftFraction = configData.normalVehicles.transportHelicopter.liftFraction;
-                            return entity;
-                        }
-                        mini.torqueScale *= configData.normalVehicles.miniCopter.rotationScale;
-                        mini.liftFraction = configData.normalVehicles.miniCopter.liftFraction;
-                    }
+                    return ModifyVehicle(entity, player);
                 }
-                else
-                {
-                    Instance.Print(player, Instance.Lang("NotSpawnedOrRecalled", player.UserIDString, DisplayName));
-                    return null;
-                }
-
-                return entity;
+                Instance.Print(player, Instance.Lang("NotSpawnedOrRecalled", player.UserIDString, DisplayName));
+                return null;
             }
 
             #region Setup
@@ -3424,14 +3455,58 @@ namespace Oxide.Plugins
                     }
                 }
 
-                if (configData.global.preventShattering)
+                if (!configData.global.preventShattering) return;
+                var magnetLiftable = entity.GetComponent<MagnetLiftable>();
+                if (magnetLiftable != null)
                 {
-                    var magnetLiftable = entity.GetComponent<MagnetLiftable>();
-                    if (magnetLiftable != null)
-                    {
-                        UnityEngine.Object.Destroy(magnetLiftable);
-                    }
+                    UnityEngine.Object.Destroy(magnetLiftable);
                 }
+            }
+            
+            private BaseEntity ModifyVehicle(BaseEntity entity, BasePlayer player)
+            {
+                if (entity is Tugboat)
+                {
+                    Tugboat tug = entity as Tugboat;
+                    tug.engineThrust *= configData.normalVehicles.tugboat.speedMultiplier;
+                    // Code for adding all teammates to tugboats.
+                    if (!configData.normalVehicles.tugboat.autoAuth) return entity;
+                    AuthTeamOnTugboat(tug, player);
+                    return entity;
+                }
+                
+                MiniCopter mini = entity as MiniCopter;
+                if (mini == null) return entity;
+                // TODO: Maybe increase speed of other vehicles.
+                
+                
+                // if (entity is ModularCar)
+                // {
+                //     // ModularCar car = entity as ModularCar;
+                //     // car.carSettings.
+                //     Instance.Print(player, $"In Case - Modular Car Found: {entity.PrefabName}");
+                //     player.SendConsoleCommand("chat.add", 0, player.userID,
+                //         $"Modular Car Found: '<color=red>{entity.PrefabName}</color>'");
+                //     return entity;
+                // }
+                // if (mini == null)
+                // {
+                //     Instance.Print(player, $"In Case - Vehicle Found: '{entity.PrefabName}', Vehicle Type: '{entity.GetType()}'");
+                //     player.SendConsoleCommand("chat.add", 0, player.userID,
+                //         $"Vehicle Found: '<color=red>{entity.PrefabName}</color>' - Vehicle Type: '<color=green>{entity.GetType()}</color>'");
+                //     return entity;
+                // }
+
+                if (entity is ScrapTransportHelicopter)
+                {
+                    mini.torqueScale *= configData.normalVehicles.transportHelicopter.rotationScale;
+                    mini.liftFraction = configData.normalVehicles.transportHelicopter.liftFraction;
+                    return entity;
+                }
+                mini.torqueScale *= configData.normalVehicles.miniCopter.rotationScale;
+                mini.liftFraction = configData.normalVehicles.miniCopter.liftFraction;
+
+                return entity;
             }
 
             #endregion Setup
@@ -4056,6 +4131,8 @@ namespace Oxide.Plugins
 
         public class SedanSettings : BaseVehicleSettings
         {
+            [JsonProperty(PropertyName = "Speed Multiplier")]
+            public float speedMultiplier { get; set; } = 1;
         }
 
         public class ChinookSettings : BaseVehicleSettings
@@ -4087,6 +4164,9 @@ namespace Oxide.Plugins
             
             [JsonProperty(PropertyName = "Speed Multiplier")]
             public float speedMultiplier { get; set; } = 1;
+            
+            [JsonProperty(PropertyName = "Auto Auth Teammates on spawn/recall")]
+            public bool autoAuth { get; set; } = true;
             
             protected override EntityFuelSystem GetFuelSystem(BaseEntity entity)
             {
@@ -4874,63 +4954,61 @@ namespace Oxide.Plugins
 
         private void UpdateConfigValues()
         {
-            if (configData.version < Version)
+            if (configData.version >= Version) return;
+            if (configData.version <= default(VersionNumber))
             {
-                if (configData.version <= default(VersionNumber))
+                string prefix, prefixColor;
+                if (GetConfigValue(out prefix, "Chat Settings", "Chat Prefix") && GetConfigValue(out prefixColor, "Chat Settings", "Chat Prefix Color"))
                 {
-                    string prefix, prefixColor;
-                    if (GetConfigValue(out prefix, "Chat Settings", "Chat Prefix") && GetConfigValue(out prefixColor, "Chat Settings", "Chat Prefix Color"))
-                    {
-                        configData.chat.prefix = $"<color={prefixColor}>{prefix}</color>: ";
-                    }
+                    configData.chat.prefix = $"<color={prefixColor}>{prefix}</color>: ";
                 }
-                if (configData.version <= new VersionNumber(1, 7, 3))
-                {
-                    configData.normalVehicles.sedan.MinDistanceForPlayers = 3f;
-                    configData.normalVehicles.chinook.MinDistanceForPlayers = 5f;
-                    configData.normalVehicles.rowboat.MinDistanceForPlayers = 2f;
-                    configData.normalVehicles.rhib.MinDistanceForPlayers = 3f;
-                    configData.normalVehicles.hotAirBalloon.MinDistanceForPlayers = 4f;
-                    configData.normalVehicles.ridableHorse.MinDistanceForPlayers = 1f;
-                    configData.normalVehicles.miniCopter.MinDistanceForPlayers = 2f;
-                    configData.normalVehicles.transportHelicopter.MinDistanceForPlayers = 4f;
-                    foreach (var entry in configData.modularVehicles)
-                    {
-                        switch (entry.Value.ChassisType)
-                        {
-                            case ChassisType.Small:
-                                entry.Value.MinDistanceForPlayers = 2f;
-                                break;
-
-                            case ChassisType.Medium:
-                                entry.Value.MinDistanceForPlayers = 2.5f;
-                                break;
-
-                            case ChassisType.Large:
-                                entry.Value.MinDistanceForPlayers = 3f;
-                                break;
-
-                            default:
-                                continue;
-                        }
-                    }
-                }
-                if (configData.version >= new VersionNumber(1, 7, 17) && configData.version <= new VersionNumber(1, 7, 18))
-                {
-                    LoadData();
-                    foreach (var data in storedData.playerData)
-                    {
-                        Vehicle vehicle;
-                        if (data.Value.TryGetValue("SubmarineDouble", out vehicle))
-                        {
-                            data.Value.Remove("SubmarineDouble");
-                            data.Value.Add(nameof(NormalVehicleType.SubmarineDuo), vehicle);
-                        }
-                    }
-                    SaveData();
-                }
-                configData.version = Version;
             }
+            if (configData.version <= new VersionNumber(1, 7, 3))
+            {
+                configData.normalVehicles.sedan.MinDistanceForPlayers = 3f;
+                configData.normalVehicles.chinook.MinDistanceForPlayers = 5f;
+                configData.normalVehicles.rowboat.MinDistanceForPlayers = 2f;
+                configData.normalVehicles.rhib.MinDistanceForPlayers = 3f;
+                configData.normalVehicles.hotAirBalloon.MinDistanceForPlayers = 4f;
+                configData.normalVehicles.ridableHorse.MinDistanceForPlayers = 1f;
+                configData.normalVehicles.miniCopter.MinDistanceForPlayers = 2f;
+                configData.normalVehicles.transportHelicopter.MinDistanceForPlayers = 4f;
+                foreach (var entry in configData.modularVehicles)
+                {
+                    switch (entry.Value.ChassisType)
+                    {
+                        case ChassisType.Small:
+                            entry.Value.MinDistanceForPlayers = 2f;
+                            break;
+
+                        case ChassisType.Medium:
+                            entry.Value.MinDistanceForPlayers = 2.5f;
+                            break;
+
+                        case ChassisType.Large:
+                            entry.Value.MinDistanceForPlayers = 3f;
+                            break;
+
+                        default:
+                            continue;
+                    }
+                }
+            }
+            if (configData.version >= new VersionNumber(1, 7, 17) && configData.version <= new VersionNumber(1, 7, 18))
+            {
+                LoadData();
+                foreach (var data in storedData.playerData)
+                {
+                    Vehicle vehicle;
+                    if (data.Value.TryGetValue("SubmarineDouble", out vehicle))
+                    {
+                        data.Value.Remove("SubmarineDouble");
+                        data.Value.Add(nameof(NormalVehicleType.SubmarineDuo), vehicle);
+                    }
+                }
+                SaveData();
+            }
+            configData.version = Version;
         }
 
         private bool GetConfigValue<T>(out T value, params string[] path)
