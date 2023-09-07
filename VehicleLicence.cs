@@ -22,7 +22,7 @@ using Random = UnityEngine.Random;
 
 namespace Oxide.Plugins
 {
-    [Info("Vehicle Licence", "Sorrow/TheDoc/Arainrr", "1.7.47")]
+    [Info("Vehicle Licence", "Sorrow/TheDoc/Arainrr", "1.7.48")]
     [Description("Allows players to buy vehicles and then spawn or store it")]
     public class VehicleLicence : RustPlugin
     {
@@ -1273,39 +1273,40 @@ namespace Oxide.Plugins
         }
         
         // Authorizes player and their team.
-        private static void AuthTeamOnTugboat(Tugboat tug, BasePlayer player, bool clear = false)
+        private static void AuthTeamOnTugboat(Tugboat tug, BasePlayer player)
         {
             RelationshipManager.PlayerTeam team = RelationshipManager.ServerInstance.FindPlayersTeam(player.userID);
-            VehiclePrivilege vehiclePrivilege;
+            VehiclePrivilege vehiclePrivilege = null;
             if (team == null || team.members.Count == 1)
             {
                 foreach (BaseEntity child in tug.children)
                 {
                     vehiclePrivilege = child as VehiclePrivilege;
-                    if (vehiclePrivilege == null) continue;
-                    if(clear) vehiclePrivilege.authorizedPlayers.Clear();
-                    vehiclePrivilege.AddPlayer(player);
+                    if (vehiclePrivilege != null) break;
                 }
+
+                if (vehiclePrivilege == null) return;
+                // I find this a bit broken to do, as it breaks gameplay and makes it OP to recall tugboat.
+                // if (clear) vehiclePrivilege.authorizedPlayers.Clear();
+                vehiclePrivilege.AddPlayer(player);
+                return;
             }
-            else
+            BasePlayer teammate;
+            foreach (BaseEntity child in tug.children)
             {
-                BasePlayer teammate;
-                foreach (BaseEntity child in tug.children)
+                vehiclePrivilege = child as VehiclePrivilege;
+                if (vehiclePrivilege == null) continue;
+                // I find this a bit broken to do, as it breaks gameplay, as it breaks gameplay and makes it OP to recall tugboat.
+                // if(clear) vehiclePrivilege.authorizedPlayers.Clear(); 
+                vehiclePrivilege.AddPlayer(player);
+                foreach (ulong id in team.members)
                 {
-                    vehiclePrivilege = child as VehiclePrivilege;
-                    if (vehiclePrivilege == null) continue;
-                    if(clear) vehiclePrivilege.authorizedPlayers.Clear();
-                    vehiclePrivilege.AddPlayer(player);
-                    foreach (ulong id in team.members)
-                    {
-                        teammate = BasePlayer.FindByID(id);
-                        if (teammate == null) continue;
-                        vehiclePrivilege.AddPlayer(teammate);
-                    }
+                    teammate = BasePlayer.FindByID(id);
+                    if (teammate == null) continue;
+                    vehiclePrivilege.AddPlayer(teammate);
                 }
             }
         }
-
         #region Train Car
 
         #endregion
@@ -1415,30 +1416,28 @@ namespace Oxide.Plugins
                 Print(player, reason);
                 return;
             }
-            //buy - Auto spawns the vehicle when buying it via universal command
-            if (BuyVehicle(player, vehicleType))
+            //buy - Auto spawns the vehicle when attempting to spawn it via universal command
+            if (!BuyVehicle(player, vehicleType)) return;
+            storedData.IsVehiclePurchased(player.userID, vehicleType, out vehicle);
+            if (vehicle.Entity != null && !vehicle.Entity.IsDestroyed)
             {
-                storedData.IsVehiclePurchased(player.userID, vehicleType, out vehicle);
-                if (vehicle.Entity != null && !vehicle.Entity.IsDestroyed)
+                //recall
+                if (CanRecall(player, vehicle, bypassCooldown, command, out reason, ref position, ref rotation))
                 {
-                    //recall
-                    if (CanRecall(player, vehicle, bypassCooldown, command, out reason, ref position, ref rotation))
-                    {
-                        RecallVehicle(player, vehicle, position, rotation);
-                        return;
-                    }
+                    RecallVehicle(player, vehicle, position, rotation);
+                    return;
                 }
-                else
-                {
-                    //spawn
-                    if (CanSpawn(player, vehicle, bypassCooldown, command, out reason, ref position, ref rotation))
-                    {
-                        SpawnVehicle(player, vehicle, position, rotation);
-                        return;
-                    }
-                }
-                Print(player, reason);
             }
+            else
+            {
+                //spawn
+                if (CanSpawn(player, vehicle, bypassCooldown, command, out reason, ref position, ref rotation))
+                {
+                    SpawnVehicle(player, vehicle, position, rotation);
+                    return;
+                }
+            }
+            Print(player, reason);
         }
 
         #endregion Universal Command
@@ -2006,7 +2005,7 @@ namespace Oxide.Plugins
                         tug.transform.hasChanged = true;
                         if(configData.normalVehicles.tugboat.autoAuth)
                         {
-                            AuthTeamOnTugboat(tug, player, true);
+                            AuthTeamOnTugboat(tug, player);
                         }
                         settings.PostRecallVehicle(player, vehicle, position, rotation);
                     }
@@ -2023,7 +2022,7 @@ namespace Oxide.Plugins
                 if (vehicle.Entity is Tugboat)
                 {
                     Tugboat tug = vehicle.Entity as Tugboat;
-                    AuthTeamOnTugboat(tug, player, true);
+                    AuthTeamOnTugboat(tug, player);
                 }
                 vehicle.Entity.transform.SetPositionAndRotation(position, rotation);
                 vehicle.Entity.transform.hasChanged = true;
@@ -2726,7 +2725,7 @@ namespace Oxide.Plugins
         public class GlobalSettings
         {
             [JsonProperty(PropertyName = "Kill all vehicles on recall and respawn instead of recalling (besides Tugboat)")]
-            public bool recallKill = true;
+            public bool recallKill = false;
             
             [JsonProperty(PropertyName = "Store Vehicle On Plugin Unloaded / Server Restart")]
             public bool storeVehicle = true;
@@ -3454,7 +3453,12 @@ namespace Oxide.Plugins
                         }
                     }
                 }
-
+                if (entity is Horse)
+                {
+                    Debug.Log($"Horse Found");
+                }
+                if(entity is RidableHorse)
+                    Debug.Log($"RidableHorse Found");
                 if (!configData.global.preventShattering) return;
                 var magnetLiftable = entity.GetComponent<MagnetLiftable>();
                 if (magnetLiftable != null)
@@ -3496,6 +3500,7 @@ namespace Oxide.Plugins
                 //         $"Vehicle Found: '<color=red>{entity.PrefabName}</color>' - Vehicle Type: '<color=green>{entity.GetType()}</color>'");
                 //     return entity;
                 // }
+                
 
                 if (entity is ScrapTransportHelicopter)
                 {
@@ -3505,6 +3510,11 @@ namespace Oxide.Plugins
                 }
                 mini.torqueScale *= configData.normalVehicles.miniCopter.rotationScale;
                 mini.liftFraction = configData.normalVehicles.miniCopter.liftFraction;
+                // Debug.Log($"Default mini.liftDotMax: {mini.liftDotMax}\nDefault mini.altForceDotMin {mini.altForceDotMin}");
+                mini.altForceDotMin = 0.9f;
+                mini.liftDotMax = 0.2f;
+                // Debug.Log($"Modified mini.liftDotMax: {mini.liftDotMax}");
+                
 
                 return entity;
             }
